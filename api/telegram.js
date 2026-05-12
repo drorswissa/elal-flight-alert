@@ -1,5 +1,16 @@
 const AIRLINES = ["EL AL", "Arkia", "Israir"];
 
+const CITY_MAP = {
+  "אתונה": "ATH",
+  "לרנקה": "LCA",
+  "פאפוס": "PFO",
+  "בודפשט": "BUD",
+  "בוקרשט": "BUH",
+  "רומא": "ROM",
+  "פריז": "PAR",
+  "לונדון": "LON"
+};
+
 function parsePrice(value) {
   return Number(String(value || "").replace("$", "").replace(",", "").trim()) || 9999;
 }
@@ -17,8 +28,51 @@ function isWantedAirline(airline) {
   return AIRLINES.some(a => airline.toLowerCase().includes(a.toLowerCase()));
 }
 
-function flightLink(destination, outbound, returnDate) {
+function googleFlightsLink(destination, outbound, returnDate) {
   return `https://www.google.com/travel/flights?q=Flights%20from%20TLV%20to%20${destination}%20on%20${outbound}%20returning%20${returnDate}`;
+}
+
+function getBookingLink(flight, destination, outbound, returnDate) {
+  return (
+    flight.bookingLink ||
+    flight.booking_link ||
+    flight.bookLink ||
+    flight.link ||
+    flight.deeplink ||
+    flight.deepLink ||
+    flight.url ||
+    flight.purchaseLink ||
+    flight.purchase_link ||
+    googleFlightsLink(destination, outbound, returnDate)
+  );
+}
+
+function formatHebrewDate(shortDate) {
+  const [day, month] = shortDate.split(".");
+  return `2026-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+function parseHebrewSearch(text) {
+  let destination = null;
+
+  for (const city in CITY_MAP) {
+    if (text.includes(city)) {
+      destination = CITY_MAP[city];
+      break;
+    }
+  }
+
+  const dates = text.match(/\d{1,2}\.\d{1,2}/g);
+
+  if (!destination || !dates || dates.length < 2) {
+    return null;
+  }
+
+  return {
+    destination,
+    outbound: formatHebrewDate(dates[0]),
+    returnDate: formatHebrewDate(dates[1])
+  };
 }
 
 async function sendTelegram(chatId, text) {
@@ -29,7 +83,8 @@ async function sendTelegram(chatId, text) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text
+      text,
+      disable_web_page_preview: true
     })
   });
 }
@@ -51,35 +106,24 @@ export default async function handler(req, res) {
   if (text === "/start") {
     await sendTelegram(
       chatId,
-      "הבוט פעיל ✈️\n\nחיפוש לדוגמה:\n/check PFO 2026-07-10 2026-07-14\n\nקודים לדוגמה:\nATH אתונה\nLCA לרנקה\nPFO פאפוס\nBUD בודפשט\nBUH בוקרשט\nPAR פריז\nROM רומא\nLON לונדון"
+      "הבוט פעיל ✈️\n\nאפשר לכתוב בעברית חופשית, למשל:\nפאפוס 10.7 עד 14.7\nרומא 1.8 עד 5.8\nאתונה 12.9 עד 16.9\n\nיעדים זמינים:\nאתונה, לרנקה, פאפוס, בודפשט, בוקרשט, פריז, רומא, לונדון"
     );
 
     return res.status(200).json({ ok: true });
   }
 
-  if (!text.startsWith("/check")) {
+  const search = parseHebrewSearch(text);
+
+  if (!search) {
     await sendTelegram(
       chatId,
-      "שלח חיפוש בפורמט:\n/check PFO 2026-07-10 2026-07-14"
+      "לא הצלחתי להבין את החיפוש.\nכתוב למשל:\nפאפוס 10.7 עד 14.7\nאו:\nרומא 1.8 עד 5.8"
     );
 
     return res.status(200).json({ ok: true });
   }
 
-  const parts = text.trim().split(/\s+/);
-
-  if (parts.length !== 4) {
-    await sendTelegram(
-      chatId,
-      "פורמט לא תקין.\nכתוב למשל:\n/check PFO 2026-07-10 2026-07-14"
-    );
-
-    return res.status(200).json({ ok: true });
-  }
-
-  const destination = parts[1].toUpperCase();
-  const outbound = parts[2];
-  const returnDate = parts[3];
+  const { destination, outbound, returnDate } = search;
 
   await sendTelegram(chatId, "בודק טיסות... ✈️");
 
@@ -114,17 +158,18 @@ export default async function handler(req, res) {
       if (!cheapest || price < cheapest.price) {
         cheapest = {
           airline,
-          price
+          price,
+          link: getBookingLink(flight, destination, outbound, returnDate)
         };
       }
     }
 
-    const link = flightLink(destination, outbound, returnDate);
+    const fallbackLink = googleFlightsLink(destination, outbound, returnDate);
 
     if (!cheapest) {
       await sendTelegram(
         chatId,
-        `לא נמצאה טיסה של אל על / ארקיע / ישראייר.\n\n🔗 ${link}`
+        `לא נמצאה טיסה של אל על / ארקיע / ישראייר.\n\n📅 ${outbound} עד ${returnDate}\n🔗 ${fallbackLink}`
       );
 
       return res.status(200).json({ ok: true });
@@ -137,7 +182,7 @@ export default async function handler(req, res) {
         `📅 ${outbound} עד ${returnDate}\n` +
         `🏢 ${cheapest.airline}\n` +
         `💵 ${cheapest.price}$\n` +
-        `🔗 ${link}`
+        `🔗 קישור להזמנה/חיפוש:\n${cheapest.link}`
     );
 
     return res.status(200).json({ ok: true });
