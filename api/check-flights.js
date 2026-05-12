@@ -9,6 +9,7 @@ const DESTINATIONS = [
   { code: "LON", name: "לונדון" }
 ];
 
+const AIRLINES = ["EL AL", "Arkia", "Israir"];
 const MAX_PRICE = 220;
 
 function addDays(date, days) {
@@ -17,135 +18,127 @@ function addDays(date, days) {
   return d.toISOString().split("T")[0];
 }
 
-export default async function handler(req, res) {
+function parsePrice(value) {
+  return Number(String(value || "").replace("$", "").replace(",", "").trim()) || 9999;
+}
 
+function getAirline(flight) {
+  return (
+    flight.airline ||
+    flight.airlines?.join(", ") ||
+    flight.flights?.map(f => f.airline).join(", ") ||
+    ""
+  );
+}
+
+function isWantedAirline(airline) {
+  return AIRLINES.some(a => airline.toLowerCase().includes(a.toLowerCase()));
+}
+
+export default async function handler(req, res) {
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   const apifyToken = process.env.APIFY_TOKEN;
 
-  const results = [];
   const today = new Date();
+  const cheapestByDestination = {};
+  let checked = 0;
 
   try {
-
     for (const destination of DESTINATIONS) {
+      cheapestByDestination[destination.code] = {
+        destination: destination.name,
+        code: destination.code,
+        found: false,
+        price: 9999
+      };
 
-      for (let i = 14; i <= 180; i += 7) {
-
+      // חיפוש 4 חודשים קדימה, כל שבועיים, 4 לילות
+      for (let i = 14; i <= 120; i += 14) {
         const outbound = addDays(today, i);
+        const returnDate = addDays(today, i + 4);
 
-        [3, 4, 5].forEach(async (nights) => {
+        checked++;
 
-          const returnDate = addDays(new Date(outbound), nights);
+        const input = {
+          origin: "TLV",
+          destination: destination.code,
+          departureDate: outbound,
+          returnDate,
+          currency: "USD"
+        };
 
-          const input = {
-            origin: "TLV",
-            destination: destination.code,
-            departureDate: outbound,
-            returnDate: returnDate,
-            currency: "USD"
-          };
-
-          const response = await fetch(
-            `https://api.apify.com/v2/acts/automation-lab~google-flights-scraper/run-sync-get-dataset-items?token=${apifyToken}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify(input)
-            }
-          );
-
-          const data = await response.json();
-
-          for (const flight of data) {
-
-            const airline =
-              flight.airline ||
-              flight.airlines?.[0] ||
-              "";
-
-            const price =
-              Number(
-                String(flight.price || "")
-                  .replace("$", "")
-                  .replace(",", "")
-              ) || 9999;
-
-            const validAirline =
-              ["EL AL", "Arkia", "Israir"]
-                .some(a => airline.includes(a));
-
-            if (validAirline && price <= MAX_PRICE) {
-
-              results.push({
-                destination: destination.name,
-                outbound,
-                returnDate,
-                nights,
-                airline,
-                price
-              });
-
-            }
-          }
-
-        });
-
-      }
-
-    }
-
-    setTimeout(async () => {
-
-      if (results.length > 0) {
-
-        const message =
-          "🔥 נמצאו טיסות זולות:\n\n" +
-          results
-            .slice(0, 10)
-            .map(
-              f =>
-                `✈️ ${f.destination}\n` +
-                `🛫 ${f.outbound}\n` +
-                `🛬 ${f.returnDate}\n` +
-                `🌙 ${f.nights} לילות\n` +
-                `🏢 ${f.airline}\n` +
-                `💵 ${f.price}$`
-            )
-            .join("\n\n");
-
-        await fetch(
-          `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+        const response = await fetch(
+          `https://api.apify.com/v2/acts/automation-lab~google-flights-scraper/run-sync-get-dataset-items?token=${apifyToken}`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              chat_id: chatId,
-              text: message
-            })
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input)
           }
         );
 
-      }
+        const data = await response.json();
 
-    }, 15000);
+        for (const flight of data) {
+          const airline = getAirline(flight);
+          const price = parsePrice(flight.price);
+
+          if (!isWantedAirline(airline)) continue;
+
+          if (price < cheapestByDestination[destination.code].price) {
+            cheapestByDestination[destination.code] = {
+              found: true,
+              destination: destination.name,
+              code: destination.code,
+              outbound,
+              returnDate,
+              airline,
+              price
+            };
+          }
+        }
+      }
+    }
+
+    const results = Object.values(cheapestByDestination);
+
+    const message =
+      "✈️ סיכום יומי - הטיסות הכי זולות שמצאתי:\n\n" +
+      results
+        .map(r => {
+          if (!r.found) {
+            return `❌ ${r.destination} (${r.code})\nלא נמצאה טיסה של אל על / ארקיע / ישראייר`;
+          }
+
+          const cheapMark = r.price <= MAX_PRICE ? "🔥" : "ℹ️";
+
+          return (
+            `${cheapMark} ${r.destination} (${r.code})\n` +
+            `📅 ${r.outbound} עד ${r.returnDate}\n` +
+            `🏢 ${r.airline}\n` +
+            `💵 ${r.price}$`
+          );
+        })
+        .join("\n\n");
+
+    await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message
+      })
+    });
 
     return res.status(200).json({
-      checked: DESTINATIONS.length,
-      found: results.length,
+      success: true,
+      checked,
       results
     });
-
   } catch (error) {
-
     return res.status(500).json({
+      success: false,
       error: error.message
     });
-
   }
-
 }
