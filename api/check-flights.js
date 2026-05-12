@@ -9,9 +9,6 @@ const DESTINATIONS = [
   { code: "LON", name: "לונדון" }
 ];
 
-const AIRLINES = ["EL AL", "Arkia", "Israir"];
-const MAX_PRICE = 220;
-
 function addDays(date, days) {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
@@ -31,110 +28,87 @@ function getAirline(flight) {
   );
 }
 
-function isWantedAirline(airline) {
-  return AIRLINES.some(a => airline.toLowerCase().includes(a.toLowerCase()));
-}
-
 export default async function handler(req, res) {
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   const apifyToken = process.env.APIFY_TOKEN;
 
   const today = new Date();
-  const cheapestByDestination = {};
-  let checked = 0;
+  const outbound = addDays(today, 30);
+  const returnDate = addDays(today, 34);
+
+  const results = [];
 
   try {
     for (const destination of DESTINATIONS) {
-      cheapestByDestination[destination.code] = {
-        destination: destination.name,
-        code: destination.code,
-        found: false,
-        price: 9999
+      const input = {
+        origin: "TLV",
+        destination: destination.code,
+        departureDate: outbound,
+        returnDate,
+        currency: "USD"
       };
 
-      // חיפוש 4 חודשים קדימה, כל שבועיים, 4 לילות
-      for (let i = 14; i <= 120; i += 14) {
-        const outbound = addDays(today, i);
-        const returnDate = addDays(today, i + 4);
+      const response = await fetch(
+        `https://api.apify.com/v2/acts/automation-lab~google-flights-scraper/run-sync-get-dataset-items?token=${apifyToken}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input)
+        }
+      );
 
-        checked++;
+      const data = await response.json();
 
-        const input = {
-          origin: "TLV",
-          destination: destination.code,
-          departureDate: outbound,
-          returnDate,
-          currency: "USD"
-        };
+      let cheapest = null;
 
-        const response = await fetch(
-          `https://api.apify.com/v2/acts/automation-lab~google-flights-scraper/run-sync-get-dataset-items?token=${apifyToken}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(input)
-          }
-        );
+      for (const flight of data) {
+        const airline = getAirline(flight);
+        const price = parsePrice(flight.price);
 
-        const data = await response.json();
-
-        for (const flight of data) {
-          const airline = getAirline(flight);
-          const price = parsePrice(flight.price);
-
-          if (!isWantedAirline(airline)) continue;
-
-          if (price < cheapestByDestination[destination.code].price) {
-            cheapestByDestination[destination.code] = {
-              found: true,
-              destination: destination.name,
-              code: destination.code,
-              outbound,
-              returnDate,
-              airline,
-              price
-            };
-          }
+        if (!cheapest || price < cheapest.price) {
+          cheapest = {
+            destination: destination.name,
+            code: destination.code,
+            airline,
+            price
+          };
         }
       }
+
+      results.push(
+        cheapest || {
+          destination: destination.name,
+          code: destination.code,
+          airline: "לא נמצא",
+          price: null
+        }
+      );
     }
 
-    const results = Object.values(cheapestByDestination);
-
     const message =
-      "✈️ סיכום יומי - הטיסות הכי זולות שמצאתי:\n\n" +
-      results
-        .map(r => {
-          if (!r.found) {
-            return `❌ ${r.destination} (${r.code})\nלא נמצאה טיסה של אל על / ארקיע / ישראייר`;
-          }
-
-          const cheapMark = r.price <= MAX_PRICE ? "🔥" : "ℹ️";
-
-          return (
-            `${cheapMark} ${r.destination} (${r.code})\n` +
-            `📅 ${r.outbound} עד ${r.returnDate}\n` +
-            `🏢 ${r.airline}\n` +
-            `💵 ${r.price}$`
-          );
-        })
-        .join("\n\n");
+      "✈️ בדיקת מחירים מהירה:\n\n" +
+      results.map(r =>
+        `✈️ ${r.destination} (${r.code})\n` +
+        `📅 ${outbound} עד ${returnDate}\n` +
+        `🏢 ${r.airline}\n` +
+        `💵 ${r.price ? r.price + "$" : "לא נמצא"}`
+      ).join("\n\n");
 
     await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message
-      })
+      body: JSON.stringify({ chat_id: chatId, text: message })
     });
 
     return res.status(200).json({
       success: true,
-      checked,
+      checked: DESTINATIONS.length,
+      outbound,
+      returnDate,
       results
     });
+
   } catch (error) {
     return res.status(500).json({
       success: false,
