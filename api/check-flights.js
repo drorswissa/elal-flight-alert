@@ -9,6 +9,8 @@ const DESTINATIONS = [
   { code: "LON", name: "לונדון" }
 ];
 
+const AIRLINES = ["EL AL", "Arkia", "Israir"];
+
 function addDays(date, days) {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
@@ -28,12 +30,22 @@ function getAirline(flight) {
   );
 }
 
+function isWantedAirline(airline) {
+  return AIRLINES.some(a => airline.toLowerCase().includes(a.toLowerCase()));
+}
+
+function flightLink(destination, outbound, returnDate) {
+  return `https://www.google.com/travel/flights?q=Flights%20from%20TLV%20to%20${destination}%20on%20${outbound}%20returning%20${returnDate}`;
+}
+
 export default async function handler(req, res) {
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   const apifyToken = process.env.APIFY_TOKEN;
 
   const today = new Date();
+
+  // כרגע: חודש קדימה, 4 לילות
   const outbound = addDays(today, 30);
   const returnDate = addDays(today, 34);
 
@@ -66,12 +78,15 @@ export default async function handler(req, res) {
         const airline = getAirline(flight);
         const price = parsePrice(flight.price);
 
+        if (!isWantedAirline(airline)) continue;
+
         if (!cheapest || price < cheapest.price) {
           cheapest = {
             destination: destination.name,
             code: destination.code,
             airline,
-            price
+            price,
+            link: flightLink(destination.code, outbound, returnDate)
           };
         }
       }
@@ -80,19 +95,21 @@ export default async function handler(req, res) {
         cheapest || {
           destination: destination.name,
           code: destination.code,
-          airline: "לא נמצא",
-          price: null
+          airline: "לא נמצאה טיסה באל על / ארקיע / ישראייר",
+          price: null,
+          link: flightLink(destination.code, outbound, returnDate)
         }
       );
     }
 
     const message =
-      "✈️ בדיקת מחירים מהירה:\n\n" +
+      "✈️ בדיקת מחירים - אל על / ארקיע / ישראייר:\n\n" +
       results.map(r =>
         `✈️ ${r.destination} (${r.code})\n` +
         `📅 ${outbound} עד ${returnDate}\n` +
         `🏢 ${r.airline}\n` +
-        `💵 ${r.price ? r.price + "$" : "לא נמצא"}`
+        `💵 ${r.price ? r.price + "$" : "לא נמצא"}\n` +
+        `🔗 ${r.link}`
       ).join("\n\n");
 
     await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
